@@ -16,15 +16,15 @@ TaskHandle_t task_1;
 TaskHandle_t task_2;
 QueueHandle_t xQueue1;
 EventGroupHandle_t sensor_event;
-int sock;
+int listen_sock;
 
 void blink_led(void*)
 {
     gpio_set_direction(GPIO_NUM_2, GPIO_MODE_OUTPUT);
-
+    xEventGroupWaitBits(sensor_event, (1 << 2), pdTRUE, pdFALSE, pdMS_TO_TICKS(0xffffffff));
     while (1) {
         char rx_buffer[32] = {0};
-        int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+        int len = recv(listen_sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
         printf("[data recv]: %s\n", rx_buffer);
         if(strstr(rx_buffer, "led on") != 0)
         {
@@ -184,40 +184,84 @@ void app_main(void)
 
 
     xEventGroupWaitBits(sensor_event, (1 << 1), pdTRUE, pdFALSE, pdMS_TO_TICKS(1000000));
-    sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-    if(sock < 0) {
+    listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if(listen_sock < 0) {
         printf("create socket failed \n");
         return;
     }
     printf("create socket success\n");
+
     struct sockaddr_in dest_addr;
-    inet_pton(AF_INET, "192.168.1.10", &dest_addr.sin_addr);
+    dest_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = htons(1234);
-    int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    dest_addr.sin_port = htons(80);
+    int err = bind(listen_sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     
     if(err != 0)
     {
-        printf("connect to server failed\n");
+        printf("Bind failed\n");
         return;
     }
-    printf("connect to server success\n");
-    send(sock, "hello server", 13, 0);
-    while (1) {
+    printf("Bind successed\n");
 
-        xEventGroupWaitBits(sensor_event, (1 << 0), pdTRUE, pdFALSE, pdMS_TO_TICKS(100000));
-        int num_data = uxQueueMessagesWaiting(xQueue1);
-        printf("[app main] sensor data: [");
-        send(sock, "[app main] sensor data: [", 25, 0);
-        for(int i = 0; i < num_data; i++)
-        {
-            xQueueReceive(xQueue1, &ss_data, pdMS_TO_TICKS(10000));
-            char send_buf[11] = {0};
-            printf("%d ", ss_data);
-            sprintf(send_buf, "%d ", ss_data);
-            send(sock, send_buf, strlen(send_buf), 0);
-        }
-        printf("]\n");
-        send(sock,"]\n", 2, 0);
+    err = listen(listen_sock, 1);
+    if(err != 0)
+    {
+        printf("listen failed\n");
     }
+    printf("listen successed\n");
+
+
+   while (1) {
+        struct sockaddr_storage source_addr; // Large enough for both IPv4 or IPv6
+        socklen_t addr_len = sizeof(source_addr);
+        int sock = accept(listen_sock, (struct sockaddr *)&source_addr, &addr_len);
+        if (sock < 0) {
+            printf("unable to accept connection: errno %d", errno);
+            break;
+        }
+        char rx_buf[1024] = {0};
+        recv(sock, rx_buf, sizeof(rx_buf) - 1, 0);
+
+        if (strstr(rx_buf, "ledon")) {
+            //LED ON
+            gpio_set_level(GPIO_NUM_2, 1);
+        } 
+        if (strstr(rx_buf, "ledoff")) {
+            //LED OFF
+            gpio_set_level(GPIO_NUM_2, 0);
+        }
+
+        char* html =    "HTTP/1.1 200 OK\n"\
+                        "Content-Type: text/html; charset=UTF-8\n"\
+                        "Content-Length: 419\n"
+                        "Connection: close\n"\
+                        "\n"\
+                        "<!DOCTYPE html>"\
+                        "<html lang=\"vi\">"\
+                        "<head>"\
+                        "  <meta charset=\"UTF-8\">"\
+                        "  <title>Hai nút đơn giản</title>"\
+                        "  <style>"\
+                        "    button {"\
+                        "      padding: 10px 20px;"\
+                        "      margin: 10px;"\
+                        "      font-size: 16px;"\
+                        "      cursor: pointer;"\
+                        "    }"\
+                        "  </style>"\
+                        "</head>"\
+                        "<body>"\
+                        "  <button onclick=\"window.location.href='http://192.168.1.13/ledon'\">Nút 1</button>"\
+                        "  <button onclick=\"window.location.href='http://192.168.1.13/ledoff'\">Nút 2</button>"\
+                        "</body>"\
+                        "</html>";
+
+        printf("[data recv]: %s", rx_buf);
+        send(sock, html, strlen(html), 0);
+        close(sock);
+       
+    }
+
+   
 }

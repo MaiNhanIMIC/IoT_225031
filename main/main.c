@@ -11,6 +11,7 @@
 #include "nvs_flash.h"
 
 #include <sys/socket.h>
+#include <esp_http_server.h>
 
 TaskHandle_t task_1;
 TaskHandle_t task_2;
@@ -59,6 +60,32 @@ void read_sensor_data(void* param)
 
     }
 }
+
+static esp_err_t ledon_get_handler(httpd_req_t *req)
+{
+    const char* resp_str = (const char*) req->user_ctx;
+    printf("LED ONNNNN!");
+    gpio_set_level(GPIO_NUM_2, 1);
+    httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t ledoff_get_handler(httpd_req_t *req)
+{
+    const char* resp_str = (const char*) req->user_ctx;
+    printf("LED OFFFFFF!");
+    gpio_set_level(GPIO_NUM_2, 0);
+    httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t home_get_handler(httpd_req_t *req)
+{
+    const char* resp_str = (const char*) req->user_ctx;
+    httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 static void event_handler(void* arg, esp_event_base_t event_base,
@@ -105,6 +132,26 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         }
     }
 }
+
+ const char* html =           "<!DOCTYPE html>"\
+                        "<html lang=\"vi\">"\
+                        "<head>"\
+                        "  <meta charset=\"UTF-8\">"\
+                        "  <title>Hai nút đơn giản</title>"\
+                        "  <style>"\
+                        "    button {"\
+                        "      padding: 10px 20px;"\
+                        "      margin: 10px;"\
+                        "      font-size: 16px;"\
+                        "      cursor: pointer;"\
+                        "    }"\
+                        "  </style>"\
+                        "</head>"\
+                        "<body>"\
+                        "  <button onclick=\"window.location.href='http://192.168.1.13/ledon'\">Nút 1</button>"\
+                        "  <button onclick=\"window.location.href='http://192.168.1.13/ledoff'\">Nút 2</button>"\
+                        "</body>"\
+                        "</html>";
 
 void app_main(void)
 {
@@ -184,84 +231,45 @@ void app_main(void)
 
 
     xEventGroupWaitBits(sensor_event, (1 << 1), pdTRUE, pdFALSE, pdMS_TO_TICKS(1000000));
-    listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-    if(listen_sock < 0) {
-        printf("create socket failed \n");
-        return;
-    }
-    printf("create socket success\n");
 
-    struct sockaddr_in dest_addr;
-    dest_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = htons(80);
-    int err = bind(listen_sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    static const httpd_uri_t uri_home = {
+        .uri       = "/",
+        .method    = HTTP_GET,
+        .handler   = home_get_handler,
+        /* Let's pass response string in user
+         * context to demonstrate it's usage */
+        .user_ctx  = (void*)html
+    };
     
-    if(err != 0)
-    {
-        printf("Bind failed\n");
-        return;
-    }
-    printf("Bind successed\n");
+    static const httpd_uri_t uri_ledon = {
+        .uri       = "/ledon",
+        .method    = HTTP_GET,
+        .handler   = ledon_get_handler,
+        /* Let's pass response string in user
+         * context to demonstrate it's usage */
+        .user_ctx  = "LED ON!"
+    };
 
-    err = listen(listen_sock, 1);
-    if(err != 0)
-    {
-        printf("listen failed\n");
-    }
-    printf("listen successed\n");
+    static const httpd_uri_t uri_ledoff = {
+        .uri       = "/ledoff",
+        .method    = HTTP_GET,
+        .handler   = ledoff_get_handler,
+        /* Let's pass response string in user
+         * context to demonstrate it's usage */
+        .user_ctx  = "LED OFF!"
+    };
 
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+    if (httpd_start(&server, &config) == ESP_OK) {
+        httpd_register_uri_handler(server, &uri_home);
+        httpd_register_uri_handler(server, &uri_ledon);
+        httpd_register_uri_handler(server, &uri_ledoff);
+    }
+    
 
    while (1) {
-        struct sockaddr_storage source_addr; // Large enough for both IPv4 or IPv6
-        socklen_t addr_len = sizeof(source_addr);
-        int sock = accept(listen_sock, (struct sockaddr *)&source_addr, &addr_len);
-        if (sock < 0) {
-            printf("unable to accept connection: errno %d", errno);
-            break;
-        }
-        char rx_buf[1024] = {0};
-        recv(sock, rx_buf, sizeof(rx_buf) - 1, 0);
-
-        if (strstr(rx_buf, "ledon")) {
-            //LED ON
-            gpio_set_level(GPIO_NUM_2, 1);
-        } 
-        if (strstr(rx_buf, "ledoff")) {
-            //LED OFF
-            gpio_set_level(GPIO_NUM_2, 0);
-        }
-
-        char* html =    "HTTP/1.1 200 OK\n"\
-                        "Content-Type: text/html; charset=UTF-8\n"\
-                        "Content-Length: 419\n"
-                        "Connection: close\n"\
-                        "\n"\
-                        "<!DOCTYPE html>"\
-                        "<html lang=\"vi\">"\
-                        "<head>"\
-                        "  <meta charset=\"UTF-8\">"\
-                        "  <title>Hai nút đơn giản</title>"\
-                        "  <style>"\
-                        "    button {"\
-                        "      padding: 10px 20px;"\
-                        "      margin: 10px;"\
-                        "      font-size: 16px;"\
-                        "      cursor: pointer;"\
-                        "    }"\
-                        "  </style>"\
-                        "</head>"\
-                        "<body>"\
-                        "  <button onclick=\"window.location.href='http://192.168.1.13/ledon'\">Nút 1</button>"\
-                        "  <button onclick=\"window.location.href='http://192.168.1.13/ledoff'\">Nút 2</button>"\
-                        "</body>"\
-                        "</html>";
-
-        printf("[data recv]: %s", rx_buf);
-        send(sock, html, strlen(html), 0);
-        close(sock);
-       
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
-
-   
 }
